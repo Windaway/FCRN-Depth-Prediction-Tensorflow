@@ -21,7 +21,7 @@ checkpoint_path = "./checkpoints/NYU_FCRN.ckpt"
 
 restore_from_fcrn=True
 restore_from_ckpt=False
-batch_size=2
+batch_size=4
 TRAIN_TFRECORD='./train.tfrecords'
 TEST_TFRECORD='./test.tfrecords'
 BATCH_CAPACITY=512  #
@@ -29,7 +29,7 @@ MIN_AFTER_DEQU=256  #
 MAX_Cycle=100000
 TRAIN_CYCLE=int(trainsize/batch_size)
 TEST_CYCLE=int(testsize/batch_size)
-learning_rt = 0.001
+learning_rt = 0.01
 savepath='./fcrnckpt/'
 logpath='./fcrnlogs/'
 ckpt_path = savepath+'ckpt.ckpt'
@@ -52,9 +52,9 @@ def read_and_decode(filename):
     img = tf.image.random_saturation(img, lower=0, upper=5)
     img = tf.cast(img, tf.float32)
     # img = tf.image.per_image_standardization(img)
-    label = tf.decode_raw(features['label'], tf.int32)
+    label = tf.decode_raw(features['label'], tf.float32)
     label = tf.reshape(label, [depth_height,depth_width, 1])
-    label= tf.cast(label,tf.float32)/1000.
+    label= tf.cast(label,tf.float32)#/65535.
 
     return img,label
 
@@ -72,9 +72,9 @@ def read_and_decode_test(filename):
     img = tf.reshape(img, [height,width, 3])
     img = tf.cast(img, tf.float32)
     # img = tf.image.per_image_standardization(img)
-    label = tf.decode_raw(features['label'], tf.int32)
+    label = tf.decode_raw(features['label'], tf.float32)
     label = tf.reshape(label, [depth_height,depth_width , 1])
-    label= tf.cast(label,tf.float32)/1000.
+    label= tf.cast(label,tf.float32)#/65535.
     return img,label
 
 def get_incoming_shape(incoming):
@@ -450,20 +450,21 @@ def inference(inputs,istrain,reuse):
         return net,net.outputs
 
 def HuberLoss(x,huber_c):
-    huber_c=tf.expand_dims(huber_c,-1)
-    huber_c=tf.expand_dims(huber_c,-1)
-    huber_c=tf.expand_dims(huber_c,-1)
-    huber_c=tf.ones_like(x)*huber_c*0.2
-    print(huber_c)
-    return tf.where(tf.less_equal(tf.abs(x),tf.abs(huber_c)),tf.abs(x),tf.multiply(tf.pow(x, 2.0)+tf.pow(huber_c, 2.0),tf.div(.5,huber_c+0.000001)))
+    # huber_c=tf.expand_dims(huber_c,-1)
+    # huber_c=tf.expand_dims(huber_c,-1)
+    # huber_c=tf.expand_dims(huber_c,-1)
+    # huber_c=tf.multiply(tf.ones_like(x),huber_c)*0.2
+    huber_c=huber_c*0.2
+    return tf.where(tf.less_equal(tf.abs(x),huber_c),tf.abs(x),tf.multiply(tf.pow(x, 2.0)+tf.pow(huber_c, 2.0),tf.div(.5,huber_c+0.000001)))
 
 def cal_loss(logits,labels):
-    huber_c=  tf.reduce_max(tf.abs(labels-logits),[1,2,3],False)
-    # return tf.clip_by_value(tf.reduce_sum(HuberLoss(labels-logits,huber_c)),0.000001,10000000.)
+    huber_c=  tf.reduce_max(tf.abs(labels-logits),[1,2,3],True)
+    # return tf.clip_by_value(tf.reduce_mean(HuberLoss(labels-logits,huber_c)),0.000001,10000000.)
     return tf.reduce_mean(HuberLoss(labels-logits,huber_c))
+    # return tf.reduce_mean(tf.losses.mean_squared_error(labels/tf.reduce_max(labels,[1,2,3],True),logits/tf.reduce_max(logits,[1,2,3],True)))
     # return  tf.losses.huber_loss(labels,logits)
 def cal_acc(logits,labels):
-    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.ones_like(labels)*.05 ),tf.float32))
+    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.multiply(tf.ones_like(labels),tf.reduce_max(labels,[1,2,3],True))*.005 ),tf.float32))
 
 
 if __name__ == '__main__':
@@ -485,8 +486,13 @@ if __name__ == '__main__':
     all_var = variables._all_saveable_objects().copy()
     for _ in range(2):
         del all_var[-1]
-    pre_train = tf.train.MomentumOptimizer(0.01,momentum=0.9).minimize(loss_train,var_list=all_var)
-    train = tf.train.AdamOptimizer(learning_rt).minimize(loss_train)
+    pre_train = tf.train.MomentumOptimizer(0.005,momentum=0.9).minimize(loss_train,var_list=all_var)
+    global_step=tf.train.create_global_step()
+    #tf.train.get_global_step()
+    learning_rate=tf.train.exponential_decay(learning_rt, global_step,
+                                           10000, 0.9, staircase=True)
+    train = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss_train,global_step=global_step)
+    # train = tf.train.AdamOptimizer(learning_rt).minimize(loss_train)
     tf.summary.scalar('loss_train', loss_train)
     tf.summary.scalar('acc_train', acc_train)
     merged = tf.summary.merge_all()
@@ -554,6 +560,7 @@ if __name__ == '__main__':
                         l_tall+=l_train
                         a_tall+=a_train
                         if (train_c+1)%100==0:
+
                             print('train_loss:%f'%(l_tall/100.))
                             print('train_acc:%f'%(a_tall/100.))
                             l_tall = 0
