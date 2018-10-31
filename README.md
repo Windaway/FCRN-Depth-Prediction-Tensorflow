@@ -1,5 +1,4 @@
 # FCRN-Tensorlayer
-<<<<<<< HEAD
 
 Another FCRN for Depth Prediction implement with Tensorflow and Tensorlayer.
 
