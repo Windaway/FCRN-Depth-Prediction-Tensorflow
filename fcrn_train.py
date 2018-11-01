@@ -18,7 +18,7 @@ depth_height=128
 depth_width=160
 channels = 3
 checkpoint_path = "./checkpoints/NYU_FCRN.ckpt"
-
+acc_th=300.
 restore_from_fcrn=True
 restore_from_ckpt=False
 batch_size=4
@@ -29,7 +29,7 @@ MIN_AFTER_DEQU=256  #
 MAX_Cycle=100000
 TRAIN_CYCLE=int(trainsize/batch_size)
 TEST_CYCLE=int(testsize/batch_size)
-learning_rt = 0.01
+learning_rt = 0.001
 savepath='./fcrnckpt/'
 logpath='./fcrnlogs/'
 ckpt_path = savepath+'ckpt.ckpt'
@@ -464,7 +464,7 @@ def cal_loss(logits,labels):
     # return tf.reduce_mean(tf.losses.mean_squared_error(labels/tf.reduce_max(labels,[1,2,3],True),logits/tf.reduce_max(logits,[1,2,3],True)))
     # return  tf.losses.huber_loss(labels,logits)
 def cal_acc(logits,labels):
-    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.multiply(tf.ones_like(labels),tf.reduce_max(labels,[1,2,3],True))*.005 ),tf.float32))
+    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.multiply(tf.ones_like(labels),acc_th) ),tf.float32))
 
 
 if __name__ == '__main__':
@@ -484,8 +484,8 @@ if __name__ == '__main__':
     acc_test=cal_acc(logits_test,label_test_batch)
     acc_train=cal_acc(logits_train,label_train_batch)
     all_var = variables._all_saveable_objects().copy()
-    for _ in range(2):
-        del all_var[-1]
+    for _ in range(len(all_var)-2):
+        del all_var[0]
     pre_train = tf.train.MomentumOptimizer(0.005,momentum=0.9).minimize(loss_train,var_list=all_var)
     global_step=tf.train.create_global_step()
     #tf.train.get_global_step()
