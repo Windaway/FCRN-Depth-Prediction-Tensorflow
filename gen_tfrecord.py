@@ -3,10 +3,10 @@ import os
 from PIL import Image
 import numpy as np
 
-height = 228
-width = 304
-depth_height=128
-depth_width=160
+height = 318
+width = 424
+depth_height=318
+depth_width=424
 trainwriter= tf.python_io.TFRecordWriter("train.tfrecords")
 rgbdir = './rgb_train/'
 depthdir = './depth_train/'

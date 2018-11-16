@@ -6,11 +6,14 @@ from tensorflow.python import pywrap_tensorflow
 import re
 import numpy as np
 import os
+need_pretrain=True
 
-
-trainsize=3000
-testsize=200
+trainsize=17582
+testsize=1000
 #huber_c=.2*max(|y˜i − yi|)
+
+input_h=318
+input_w=424
 
 height = 228
 width = 304
@@ -18,9 +21,9 @@ depth_height=128
 depth_width=160
 channels = 3
 checkpoint_path = "./checkpoints/NYU_FCRN.ckpt"
-acc_th=300.
-restore_from_fcrn=True
-restore_from_ckpt=False
+
+restore_from_fcrn=False
+restore_from_ckpt=True
 batch_size=4
 TRAIN_TFRECORD='./train.tfrecords'
 TEST_TFRECORD='./test.tfrecords'
@@ -32,7 +35,7 @@ TEST_CYCLE=int(testsize/batch_size)
 learning_rt = 0.001
 savepath='./fcrnckpt/'
 logpath='./fcrnlogs/'
-ckpt_path = savepath+'ckpt.ckpt'
+ckpt_path = savepath+'124.ckpt'
 
 def read_and_decode(filename):
     filename_queue = tf.train.string_input_producer([filename])
@@ -45,17 +48,25 @@ def read_and_decode(filename):
                                        })
 
     img = tf.decode_raw(features['img'], tf.uint8)
-    img = tf.reshape(img, [height,width, 3])
+    img = tf.reshape(img, [input_h,input_w, 3])
+
     img = tf.image.random_brightness(img, max_delta=0.3)
     img = tf.image.random_contrast(img, lower=0.1, upper=0.6)
     img = tf.image.random_hue(img, max_delta=0.1)
-    img = tf.image.random_saturation(img, lower=0, upper=5)
+    img = tf.image.random_saturation(img, lower=0.5, upper=2.5)
+    img = tf.cast(img, tf.float32)
+    label = tf.decode_raw(features['label'], tf.float32)
+    label = tf.reshape(label, [input_h,input_w, 1])
+    imgt=tf.concat([img,label],axis=-1)
+
+    random_rota=tf.random_uniform([],-0.15,0.15,tf.float32)
+    imgt=tf.contrib.image.rotate(imgt,random_rota,'BILINEAR')
+    imgt=tf.random_crop(imgt,[height,width,4])
+    img=imgt[:,:,0:3]
     img = tf.cast(img, tf.float32)
     # img = tf.image.per_image_standardization(img)
-    label = tf.decode_raw(features['label'], tf.float32)
-    label = tf.reshape(label, [depth_height,depth_width, 1])
+    label=tf.image.resize_images(imgt[:,:,3:],[depth_height,depth_width])
     label= tf.cast(label,tf.float32)#/65535.
-
     return img,label
 
 def read_and_decode_test(filename):
@@ -69,11 +80,13 @@ def read_and_decode_test(filename):
                                        })#将image数据和label取出来
 
     img = tf.decode_raw(features['img'], tf.uint8)
-    img = tf.reshape(img, [height,width, 3])
+    img = tf.reshape(img, [input_h,input_w, 3])
+    img=tf.image.resize_images(img,[height,width])
     img = tf.cast(img, tf.float32)
     # img = tf.image.per_image_standardization(img)
     label = tf.decode_raw(features['label'], tf.float32)
-    label = tf.reshape(label, [depth_height,depth_width , 1])
+    label = tf.reshape(label, [input_h,input_w , 1])
+    label=tf.image.resize_images(label,[depth_height,depth_width])
     label= tf.cast(label,tf.float32)#/65535.
     return img,label
 
@@ -240,7 +253,6 @@ def inference(inputs,istrain,reuse):
         relu5c = LambdaLayer(res5c, tf.nn.relu, name='res5c_relu')
         net = Conv2d(relu5c, 1024, (1, 1), (1, 1),act=None ,name='layer1')
         net = BatchNormLayer(net, 0.999, 0.00001, None, istrain, name='layer1_BN')
-
 
         layer2x_br1_ConvA=Conv2d(net, 512, (3, 3), (1, 1),act=None ,padding='SAME',name='layer2x_br1_ConvA')
         layer2x_br1_ConvB_input = LambdaLayer(net, fn=tf.pad, fn_args={'paddings': [[0, 0], [1, 0], [1, 1], [0, 0]],
@@ -464,8 +476,20 @@ def cal_loss(logits,labels):
     # return tf.reduce_mean(tf.losses.mean_squared_error(labels/tf.reduce_max(labels,[1,2,3],True),logits/tf.reduce_max(logits,[1,2,3],True)))
     # return  tf.losses.huber_loss(labels,logits)
 def cal_acc(logits,labels):
-    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.multiply(tf.ones_like(labels),acc_th) ),tf.float32))
-
+    #tf.reduce_max(labels,[1,2,3],True))*.005
+    return tf.reduce_mean( tf.cast( tf.less_equal(tf.abs(labels-logits),tf.multiply(tf.ones_like(labels),10.)),tf.float32))
+def cal_mean_var(logits,labels):
+    #tf.reduce_max(labels,[1,2,3],True))*.005
+    vector=tf.reshape(logits-labels,[-1])
+    mean,var=tf.nn.moments(vector,0)
+    return mean,var
+def cal_mean_var_alter(logits,labels):
+    #tf.reduce_max(labels,[1,2,3],True))*.005
+    temp_logits=logits[:,24:104,32:128,:]
+    temp_labels=labels[:,24:104,32:128,:]
+    vector=tf.reshape(temp_logits-temp_labels,[-1])
+    mean,var=tf.nn.moments(vector,0)
+    return mean,var
 
 if __name__ == '__main__':
 
@@ -483,13 +507,19 @@ if __name__ == '__main__':
     loss_test=cal_loss(logits_test,label_test_batch)
     acc_test=cal_acc(logits_test,label_test_batch)
     acc_train=cal_acc(logits_train,label_train_batch)
+    train_mean,train_var=cal_mean_var(logits_train,label_train_batch)
+    print(train_mean,train_var)
+    test_mean,test_var=cal_mean_var_alter(logits_test,label_test_batch)
     all_var = variables._all_saveable_objects().copy()
-    for _ in range(len(all_var)-2):
+    lens_all=len(all_var)
+    for _ in range(lens_all-2):
         del all_var[0]
+
+    print(all_var)
     pre_train = tf.train.MomentumOptimizer(0.005,momentum=0.9).minimize(loss_train,var_list=all_var)
     global_step=tf.train.create_global_step()
-    #tf.train.get_global_step()
-    learning_rate=tf.train.exponential_decay(learning_rt, global_step,
+    global_step=tf.train.get_global_step()
+    learning_rate=tf.train.exponential_decay(learning_rt,global_step,
                                            10000, 0.9, staircase=True)
     train = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss_train,global_step=global_step)
     # train = tf.train.AdamOptimizer(learning_rt).minimize(loss_train)
@@ -527,8 +557,10 @@ if __name__ == '__main__':
             print('\nEnd Restore')
         elif restore_from_ckpt:
             print('\nStart Restore')
-            saver = tf.train.Saver()
-            saver.restore(sess, checkpoint_path)
+            vlist=tf.trainable_variables()
+            print(vlist)
+            saver = tf.train.Saver(var_list=vlist)
+            saver.restore(sess, ckpt_path)
             saver = tf.train.Saver()
             print('\nEnd Restore')
         else:
@@ -539,43 +571,63 @@ if __name__ == '__main__':
             while not coord.should_stop():
                 l_tall = 0
                 a_tall = 0
-                for train_c in range(TRAIN_CYCLE):
-                    _, l_train, a_train = sess.run([pre_train, loss_train, acc_train])
-                    l_tall += l_train
-                    a_tall += a_train
-                    if (train_c + 1) % 100 == 0:
-                        print('train_loss:%f' % (l_tall / 100.))
-                        print('train_acc:%f' % (a_tall / 100.))
-                        l_tall = 0
-                        a_tall = 0
-                print('Finish PreTrain')
+                mean_all=0
+                var_all=0
+                if need_pretrain:
+                    for train_c in range(TRAIN_CYCLE):
+                        _, l_train, a_train,train_m ,train_v= sess.run([pre_train, loss_train, acc_train,train_mean,train_var])
+                        l_tall += l_train
+                        a_tall += a_train
+                        mean_all += train_m
+                        var_all += train_v
+                        if (train_c + 1) % 100 == 0:
+                            print('train_loss:%f' % (l_tall / 100.))
+                            print('train_acc:%f' % (a_tall / 100.))
+                            print('train_mean_all:%f' % (mean_all / 100.))
+                            print('train_var_all:%f' % (var_all / 100.))
+                            l_tall = 0
+                            a_tall = 0
+                            mean_all = 0
+                            var_all = 0
+                    print('Finish PreTrain')
                 while run_cycle < MAX_Cycle:
                     run_cycle+=1
                     l_tall=0
                     a_tall=0
                     l_teall=0
                     a_teall=0
+                    mean_all = 0
+                    var_all = 0
+                    mean_tall = 0
+                    var_tall = 0
                     for train_c in range(TRAIN_CYCLE):
-                        _,l_train,a_train=sess.run([train,loss_train,acc_train])
+                        _,l_train,a_train,train_m,train_v=sess.run([train,loss_train,acc_train,train_mean,train_var])
                         l_tall+=l_train
                         a_tall+=a_train
+                        mean_all += train_m
+                        var_all += train_v
                         if (train_c+1)%100==0:
-
                             print('train_loss:%f'%(l_tall/100.))
                             print('train_acc:%f'%(a_tall/100.))
+                            print('train_mean_all:%f' % (mean_all / 100.))
+                            print('train_var_all:%f' % (var_all / 100.))
                             l_tall = 0
                             a_tall = 0
                         if (train_c+1)%500==0:
                             result_merged=sess.run(merged)
                             trainwrite.add_summary(result_merged, run_cycle*TRAIN_CYCLE+train_c)
                     for test_c in range(TEST_CYCLE):
-                        l_test,a_test=sess.run([loss_test,acc_test])
+                        l_test,a_test,test_m,test_v=sess.run([loss_test,acc_test,test_mean,test_var])
                         l_teall+=l_test
                         a_teall+=a_test
+                        mean_tall += test_m
+                        var_tall += test_v
                         if (test_c+1)%TEST_CYCLE==0:
                             print('------------------')
                             print('test_loss:%f'%(l_teall/TEST_CYCLE))
                             print('test_acc:%f'%(a_teall/TEST_CYCLE))
+                            print('train_mean_all:%f' % (mean_tall / TEST_CYCLE))
+                            print('train_var_all:%f' % (var_tall / TEST_CYCLE))
                             print('------------------')
                             l_teall = 0
                             l_teall = 0
